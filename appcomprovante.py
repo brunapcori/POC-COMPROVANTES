@@ -26,16 +26,46 @@ if os.path.exists(ZIP_FILE) and not os.path.exists("indice_comprovantes_ficticio
     with zipfile.ZipFile(ZIP_FILE, 'r') as zip_ref:
         zip_ref.extractall(".")
 
-# 3. Carregar o catálogo de comprovativos
+# 3. Carregar e padronizar o catálogo de comprovativos
 @st.cache_data
 def carregar_dados():
-    if not os.path.exists("indice_comprovantes_ficticios.csv"):
+    csv_file = "indice_comprovantes_ficticios.csv"
+    if not os.path.exists(csv_file):
         return pd.DataFrame()
-    return pd.read_csv("indice_comprovantes_ficticios.csv")
+    
+    # Lê detetando automaticamente se o separador é vírgula ou ponto e vírgula
+    try:
+        df = pd.read_csv(csv_file, sep=None, engine="python")
+    except Exception:
+        df = pd.read_csv(csv_file)
+        
+    # Remove espaços em branco nas extremidades dos nomes das colunas
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Mapeia colunas comuns para garantir padrão de maiúscula inicial
+    renomear = {}
+    for col in df.columns:
+        col_lower = col.lower()
+        if "empresa" in col_lower:
+            renomear[col] = "Empresa"
+        elif "fornecedor" in col_lower or "beneficiario" in col_lower:
+            renomear[col] = "Fornecedor"
+        elif "data" in col_lower:
+            renomear[col] = "Data"
+        elif "valor" in col_lower:
+            renomear[col] = "Valor"
+        elif "nota" in col_lower or "nf" in col_lower:
+            renomear[col] = "Nota Fiscal"
+        elif "pdf" in col_lower or "arquivo" in col_lower:
+            renomear[col] = "PDF"
+        elif "pag" in col_lower:
+            renomear[col] = "Página"
+    
+    df = df.rename(columns=renomear)
+    return df
 
 df_indice = carregar_dados()
 
-# Prompt focado em extrair apenas a empresa e o fornecedor
 PROMPT_SISTEMA = """
 Você é o assistente inteligente de busca do sistema ComprovanteIA.
 Sua única responsabilidade é identificar a empresa pagadora e o fornecedor que foi pago mencionados pelo usuário, mesmo que sejam nomes parciais ou aproximados.
@@ -55,7 +85,7 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
     """Interpreta os critérios da consulta via IA ou através de correspondência inteligente direta."""
     criterios = {"empresa": None, "fornecedor": None}
 
-    # Tentativa de chamada aos modelos disponíveis no Gemini
+    # Tentativa de chamada via API Gemini
     if api_key:
         modelos = ["gemini-1.5-flash-latest", "gemini-2.0-flash", "gemini-1.5-pro-latest", "gemini-1.5-flash"]
         for nome_modelo in modelos:
@@ -73,17 +103,17 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
             except Exception:
                 continue
 
-    # Mecanismo de contingência (fallback): identifica termos do catálogo diretamente no texto
+    # Fallback: identifica termos diretamente no catálogo
     texto_limpo = texto_usuario.lower()
     if not df.empty:
-        if not criterios.get("empresa"):
+        if not criterios.get("empresa") and "Empresa" in df.columns:
             for emp in df["Empresa"].dropna().unique():
                 palavras = [p.lower() for p in str(emp).split() if len(p) > 2]
                 if any(p in texto_limpo for p in palavras):
                     criterios["empresa"] = emp
                     break
 
-        if not criterios.get("fornecedor"):
+        if not criterios.get("fornecedor") and "Fornecedor" in df.columns:
             for forn in df["Fornecedor"].dropna().unique():
                 palavras = [p.lower() for p in str(forn).split() if len(p) > 2]
                 if any(p in texto_limpo for p in palavras):
@@ -93,19 +123,17 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
     return criterios
 
 def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
-    """Filtra o índice permitindo correspondência parcial de empresa e fornecedor."""
+    """Filtra o índice permitindo correspondência parcial de empresa ou fornecedor."""
     if df.empty or not criterios:
         return pd.DataFrame()
 
     resultado = df.copy()
 
-    # Filtra por empresa se identificada (utiliza o termo principal)
-    if criterios.get("empresa"):
+    if criterios.get("empresa") and "Empresa" in resultado.columns:
         termo = str(criterios["empresa"]).strip().split()[0]
         resultado = resultado[resultado["Empresa"].astype(str).str.contains(termo, case=False, na=False)]
 
-    # Filtra por fornecedor se identificado (utiliza o termo principal)
-    if criterios.get("fornecedor"):
+    if criterios.get("fornecedor") and "Fornecedor" in resultado.columns:
         termo = str(criterios["fornecedor"]).strip().split()[0]
         resultado = resultado[resultado["Fornecedor"].astype(str).str.contains(termo, case=False, na=False)]
 
@@ -127,7 +155,7 @@ st.caption("Consulte comprovativos indicando apenas a empresa pagadora e o forne
 
 entrada_usuario = st.text_input(
     "Como posso ajudar?",
-    placeholder="Ex.: comprovante da empresa alfa para o fornecedor horizonte"
+    placeholder="Ex.: comprovante da empresa alfa"
 )
 
 if entrada_usuario:
@@ -146,7 +174,6 @@ if entrada_usuario:
     else:
         st.success(f"Foram encontrados **{total}** comprovativo(s) correspondente(s).")
 
-        # Apresentação da tabela completa com Data, Empresa, Fornecedor, Valor e NF
         colunas = ["Data", "Empresa", "Fornecedor", "Valor", "Nota Fiscal", "PDF", "Página"]
         st.dataframe(
             resultados[[c for c in colunas if c in resultados.columns]],
@@ -156,7 +183,6 @@ if entrada_usuario:
         st.markdown("---")
         st.subheader("📑 Selecionar e descarregar comprovativo")
 
-        # Lista suspensa com Data, Valor e NF para escolha precisa
         opcoes = [
             f"Registo #{idx} | Data: {row.get('Data', 'N/D')} | Valor: R\$ {row.get('Valor', 'N/D')} | NF: {row.get('Nota Fiscal', 'N/D')}"
             for idx, row in resultados.iterrows()
