@@ -5,8 +5,7 @@ import io
 import zipfile
 import pandas as pd
 import streamlit as st
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from pypdf import PdfReader, PdfWriter
 
 st.set_page_config(
@@ -15,21 +14,22 @@ st.set_page_config(
     layout="wide"
 )
 
-# 1. Carregar chave de API (Streamlit Secrets prioritário, seguido por ambiente local)
+# 1. Configurar chave do Google AI Studio
 api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 if not api_key:
     st.error("Chave GEMINI_API_KEY não configurada nos Secrets do Streamlit.")
     st.stop()
 
-client = genai.Client(api_key=api_key)
+# Configuração direta com o pacote google-generativeai
+genai.configure(api_key=api_key)
 
-# 2. Descompactar ficheiros se necessário
+# 2. Descompactar arquivos se necessário
 ZIP_FILE = "comprovanteia_poc_consolidada.zip"
 if os.path.exists(ZIP_FILE) and not os.path.exists("indice_comprovantes_ficticios.csv"):
     with zipfile.ZipFile(ZIP_FILE, 'r') as zip_ref:
         zip_ref.extractall(".")
 
-# 3. Carregar o catálogo de comprovativos
+# 3. Carregar índice de comprovativos
 @st.cache_data
 def carregar_dados():
     if not os.path.exists("indice_comprovantes_ficticios.csv"):
@@ -38,60 +38,55 @@ def carregar_dados():
 
 df_indice = carregar_dados()
 
-# Prompt focado apenas na extração flexível de Empresa e Fornecedor
+# Prompt focado em extrair apenas Empresa e Fornecedor
 PROMPT_SISTEMA = """
 Você é o assistente de busca do sistema ComprovanteIA.
-Sua única responsabilidade é identificar a empresa pagadora e o fornecedor que foi pago mencionados pelo usuário, mesmo que os nomes sejam parciais ou aproximados.
+Sua responsabilidade é extrair termos parciais ou aproximados da empresa pagadora e do fornecedor mencionados pelo usuário.
 
 Regras:
-- Extraia apenas o termo ou nome da empresa pagadora no campo "empresa". Se não identificado, retorne null.
-- Extraia apenas o termo ou nome do fornecedor/beneficiário no campo "fornecedor". Se não identificado, retorne null.
-- NÃO exija nem extraia datas, valores ou números de notas fiscais.
-- Retorne ESTRITAMENTE um JSON no seguinte formato:
+- Extraia o nome ou termo da empresa pagadora no campo "empresa". Caso não encontre, retorne null.
+- Extraia o nome ou termo do fornecedor/beneficiário no campo "fornecedor". Caso não encontre, retorne null.
+- Não extraia nem exija datas, valores ou número de nota fiscal.
+- Retorne ESTRITAMENTE um JSON com esta estrutura:
 {
-  "empresa": "string ou null",
-  "fornecedor": "string ou null"
+  "empresa": null,
+  "fornecedor": null
 }
 """
 
 def extrair_criterios_ia(texto_usuario: str) -> dict:
-    """Extrai os termos de empresa e fornecedor utilizando o modelo Gemini."""
+    """Interpreta a solicitação do usuário utilizando o modelo Gemini."""
     try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=texto_usuario,
-            config=types.GenerateContentConfig(
-                system_instruction=PROMPT_SISTEMA,
-                response_mime_type="application/json",
-                temperature=0.0
-            )
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            system_instruction=PROMPT_SISTEMA,
+            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
         )
+        response = model.generate_content(texto_usuario)
         return json.loads(response.text)
     except Exception as e:
-        st.error(f"Erro na interpretação da consulta: {e}")
+        st.error(f"Erro na consulta à IA: {e}")
         return {}
 
 def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
-    """Filtra o catálogo por correspondência parcial de empresa e fornecedor."""
+    """Filtra o DataFrame por correspondência parcial sem exigir valores exatos."""
     if df.empty or not criterios:
         return pd.DataFrame()
 
     resultado = df.copy()
 
-    # Filtro parcial para Empresa (sem exigir correspondência exata)
     if criterios.get("empresa"):
-        termo_empresa = str(criterios["empresa"]).strip()
-        resultado = resultado[resultado["Empresa"].astype(str).str.contains(termo_empresa, case=False, na=False)]
+        termo = str(criterios["empresa"]).strip()
+        resultado = resultado[resultado["Empresa"].astype(str).str.contains(termo, case=False, na=False)]
 
-    # Filtro parcial para Fornecedor (sem exigir correspondência exata)
     if criterios.get("fornecedor"):
-        termo_fornecedor = str(criterios["fornecedor"]).strip()
-        resultado = resultado[resultado["Fornecedor"].astype(str).str.contains(termo_fornecedor, case=False, na=False)]
+        termo = str(criterios["fornecedor"]).strip()
+        resultado = resultado[resultado["Fornecedor"].astype(str).str.contains(termo, case=False, na=False)]
 
     return resultado
 
 def extrair_pagina_pdf(caminho_pdf: str, numero_pagina: int) -> bytes:
-    """Extrai a página pretendida do ficheiro PDF consolidado."""
+    """Extrai apenas a página indicada do arquivo PDF."""
     reader = PdfReader(caminho_pdf)
     writer = PdfWriter()
     writer.add_page(reader.pages[numero_pagina - 1])
@@ -100,7 +95,7 @@ def extrair_pagina_pdf(caminho_pdf: str, numero_pagina: int) -> bytes:
     buffer.seek(0)
     return buffer.getvalue()
 
-# --- INTERFACE DE UTILIZADOR ---
+# --- INTERFACE STREAMLIT ---
 st.title("🧾 ComprovanteIA")
 st.caption("Consulte comprovativos informando apenas a empresa pagadora e o fornecedor")
 
@@ -110,7 +105,7 @@ entrada_usuario = st.text_input(
 )
 
 if entrada_usuario:
-    with st.spinner("A identificar termos e a pesquisar..."):
+    with st.spinner("Pesquisando comprovativos..."):
         criterios = extrair_criterios_ia(entrada_usuario)
         resultados = buscar_comprovantes(criterios, df_indice)
 
@@ -118,56 +113,51 @@ if entrada_usuario:
         with st.expander("🔍 Critérios identificados", expanded=False):
             st.json(criterios)
 
-    total_encontrados = len(resultados)
+    total = len(resultados)
 
-    if total_encontrados == 0:
-        st.warning("Nenhum comprovativo encontrado para os termos indicados. Tente ajustar o nome da empresa ou do fornecedor.")
+    if total == 0:
+        st.warning("Nenhum comprovativo encontrado para os termos indicados. Tente ajustar o nome da empresa ou fornecedor.")
     else:
-        st.success(f"Foram encontrados **{total_encontrados}** comprovativo(s) correspondente(s).")
+        st.success(f"Foram encontrados **{total}** comprovativo(s) correspondente(s).")
 
-        # Tabela com as colunas essenciais: Data, Empresa, Fornecedor, Valor e NF
-        colunas_exibicao = ["Data", "Empresa", "Fornecedor", "Valor", "Nota Fiscal", "PDF", "Página"]
-        st.dataframe(
-            resultados[[c for c in colunas_exibicao if c in resultados.columns]],
-            use_container_width=True
-        )
+        colunas = ["Data", "Empresa", "Fornecedor", "Valor", "Nota Fiscal", "PDF", "Página"]
+        st.dataframe(resultados[[c for c in colunas if c in resultados.columns]], use_container_width=True)
 
         st.markdown("---")
         st.subheader("📑 Selecionar e descarregar comprovativo")
 
-        # Menu de seleção para o utilizador escolher o registo pretendido
         opcoes = [
             f"Registo #{idx} | Data: {row.get('Data', 'N/D')} | Valor: R\$ {row.get('Valor', 'N/D')} | NF: {row.get('Nota Fiscal', 'N/D')}"
             for idx, row in resultados.iterrows()
         ]
-        
+
         escolha = st.selectbox("Selecione o comprovativo na lista:", opcoes)
 
         if escolha:
-            indice_selecionado = int(escolha.split(" | ")[0].replace("Registo #", ""))
-            item_selecionado = resultados.loc[indice_selecionado]
-            
-            caminho_arquivo = str(item_selecionado.get("PDF", ""))
-            numero_pagina = int(item_selecionado.get("Página", 1))
+            idx_sel = int(escolha.split(" | ")[0].replace("Registo #", ""))
+            item_sel = resultados.loc[idx_sel]
 
-            col_det1, col_det2 = st.columns(2)
-            with col_det1:
-                st.write(f"**Empresa:** {item_selecionado.get('Empresa', 'N/D')}")
-                st.write(f"**Fornecedor:** {item_selecionado.get('Fornecedor', 'N/D')}")
-                st.write(f"**Data:** {item_selecionado.get('Data', 'N/D')}")
-                st.write(f"**Valor:** R\$ {item_selecionado.get('Valor', 'N/D')}")
-                st.write(f"**Nota Fiscal:** {item_selecionado.get('Nota Fiscal', 'N/D')}")
+            pdf_path = str(item_sel.get("PDF", ""))
+            pag_num = int(item_sel.get("Página", 1))
 
-            with col_det2:
-                st.info(f"📄 **Ficheiro:** `{caminho_arquivo}`\n\n📌 **Página:** `{numero_pagina}`")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Empresa:** {item_sel.get('Empresa', 'N/D')}")
+                st.write(f"**Fornecedor:** {item_sel.get('Fornecedor', 'N/D')}")
+                st.write(f"**Data:** {item_sel.get('Data', 'N/D')}")
+                st.write(f"**Valor:** R\$ {item_sel.get('Valor', 'N/D')}")
+                st.write(f"**Nota Fiscal:** {item_sel.get('Nota Fiscal', 'N/D')}")
 
-                if os.path.exists(caminho_arquivo):
-                    pdf_bytes = extrair_pagina_pdf(caminho_arquivo, numero_pagina)
+            with col2:
+                st.info(f"📄 **Ficheiro:** `{pdf_path}`\n\n📌 **Página:** `{pag_num}`")
+
+                if os.path.exists(pdf_path):
+                    pdf_bytes = extrair_pagina_pdf(pdf_path, pag_num)
                     st.download_button(
                         label="📥 Descarregar Comprovativo (Página Individual)",
                         data=pdf_bytes,
-                        file_name=f"comprovativo_p{numero_pagina}.pdf",
+                        file_name=f"comprovativo_p{pag_num}.pdf",
                         mime="application/pdf"
                     )
                 else:
-                    st.warning(f"O ficheiro `{caminho_arquivo}` não foi encontrado no servidor.")
+                    st.warning(f"O ficheiro `{pdf_path}` não foi encontrado.")
