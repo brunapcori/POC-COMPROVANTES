@@ -8,67 +8,64 @@ import streamlit as st
 import google.generativeai as genai
 from pypdf import PdfReader, PdfWriter
 
-# Configuração da página da aplicação
 st.set_page_config(
     page_title="ComprovanteIA",
     page_icon="🧾",
     layout="wide"
 )
 
-# 1. Configurar chave de API
+# 1. Configuração da chave de API
 api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-# 2. Descompactar arquivos do repositório se necessário
+# 2. Descompactar arquivos se necessário
 ZIP_FILE = "comprovanteia_poc_consolidada.zip"
 if os.path.exists(ZIP_FILE) and not os.path.exists("indice_comprovantes_ficticios.csv"):
     with zipfile.ZipFile(ZIP_FILE, 'r') as zip_ref:
         zip_ref.extractall(".")
 
-# 3. Carregar e padronizar o catálogo de comprovativos
+# 3. Carregamento e mapeamento seguro das colunas do CSV
 @st.cache_data
 def carregar_dados():
     csv_file = "indice_comprovantes_ficticios.csv"
     if not os.path.exists(csv_file):
         return pd.DataFrame()
     
-    # Lê detetando automaticamente se o separador é vírgula ou ponto e vírgula
+    # Deteta separador (vírgula, ponto e vírgula, etc.)
     try:
-        df = pd.read_csv(csv_file, sep=None, engine="python")
+        df = pd.read_csv(csv_file, sep=None, engine="python", encoding="utf-8-sig")
     except Exception:
         df = pd.read_csv(csv_file)
         
-    # Remove espaços em branco nas extremidades dos nomes das colunas
-    df.columns = [str(c).strip() for c in df.columns]
+    df.columns = [str(c).strip().lower() for c in df.columns]
 
-    # Mapeia colunas comuns para garantir padrão de maiúscula inicial
-    renomear = {}
-    for col in df.columns:
-        col_lower = col.lower()
-        if "empresa" in col_lower:
-            renomear[col] = "Empresa"
-        elif "fornecedor" in col_lower or "beneficiario" in col_lower:
-            renomear[col] = "Fornecedor"
-        elif "data" in col_lower:
-            renomear[col] = "Data"
-        elif "valor" in col_lower:
-            renomear[col] = "Valor"
-        elif "nota" in col_lower or "nf" in col_lower:
-            renomear[col] = "Nota Fiscal"
-        elif "pdf" in col_lower or "arquivo" in col_lower:
-            renomear[col] = "PDF"
-        elif "pag" in col_lower:
-            renomear[col] = "Página"
-    
-    df = df.rename(columns=renomear)
+    # Mapeia os cabeçalhos originais da POC para nomes padronizados
+    mapa = {}
+    for c in df.columns:
+        if "empresa" in c or "pagadora" in c:
+            mapa[c] = "Empresa"
+        elif "fornecedor" in c or "beneficiario" in c:
+            mapa[c] = "Fornecedor"
+        elif "data" in c:
+            mapa[c] = "Data"
+        elif "valor" in c:
+            mapa[c] = "Valor"
+        elif "nf" in c or "nota" in c:
+            mapa[c] = "Nota Fiscal"
+        elif "pdf" in c or "arquivo" in c:
+            mapa[c] = "PDF"
+        elif "pag" in c:
+            mapa[c] = "Página"
+            
+    df = df.rename(columns=mapa)
     return df
 
 df_indice = carregar_dados()
 
 PROMPT_SISTEMA = """
 Você é o assistente inteligente de busca do sistema ComprovanteIA.
-Sua única responsabilidade é identificar a empresa pagadora e o fornecedor que foi pago mencionados pelo usuário, mesmo que sejam nomes parciais ou aproximados.
+Sua única responsabilidade é identificar a empresa pagadora e o fornecedor mencionados pelo usuário, mesmo que sejam nomes parciais ou aproximados.
 
 Regras:
 - Extraia o nome ou termo principal da empresa no campo "empresa". Caso não encontre, retorne null.
@@ -82,13 +79,12 @@ Regras:
 """
 
 def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
-    """Interpreta os critérios da consulta via IA ou através de correspondência inteligente direta."""
+    """Interpreta os critérios da consulta via Gemini ou por correspondência direta no catálogo."""
     criterios = {"empresa": None, "fornecedor": None}
 
-    # Tentativa de chamada via API Gemini
+    # Tentativa via Gemini API
     if api_key:
-        modelos = ["gemini-1.5-flash-latest", "gemini-2.0-flash", "gemini-1.5-pro-latest", "gemini-1.5-flash"]
-        for nome_modelo in modelos:
+        for nome_modelo in ["gemini-1.5-flash-latest", "gemini-2.0-flash", "gemini-1.5-pro-latest"]:
             try:
                 model = genai.GenerativeModel(
                     model_name=nome_modelo,
@@ -103,7 +99,7 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
             except Exception:
                 continue
 
-    # Fallback: identifica termos diretamente no catálogo
+    # Fallback automático: identifica termos conhecidos diretamente no texto
     texto_limpo = texto_usuario.lower()
     if not df.empty:
         if not criterios.get("empresa") and "Empresa" in df.columns:
@@ -123,7 +119,7 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
     return criterios
 
 def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
-    """Filtra o índice permitindo correspondência parcial de empresa ou fornecedor."""
+    """Filtra o índice permitindo correspondência flexível."""
     if df.empty or not criterios:
         return pd.DataFrame()
 
@@ -140,7 +136,7 @@ def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
     return resultado
 
 def extrair_pagina_pdf(caminho_pdf: str, numero_pagina: int) -> bytes:
-    """Extrai apenas a página indicada do ficheiro PDF consolidado."""
+    """Extrai apenas a página indicada do arquivo PDF consolidado."""
     reader = PdfReader(caminho_pdf)
     writer = PdfWriter()
     writer.add_page(reader.pages[numero_pagina - 1])
@@ -149,13 +145,13 @@ def extrair_pagina_pdf(caminho_pdf: str, numero_pagina: int) -> bytes:
     buffer.seek(0)
     return buffer.getvalue()
 
-# --- INTERFACE VISUAL STREAMLIT ---
+# --- INTERFACE STREAMLIT ---
 st.title("🧾 ComprovanteIA")
 st.caption("Consulte comprovativos indicando apenas a empresa pagadora e o fornecedor")
 
 entrada_usuario = st.text_input(
     "Como posso ajudar?",
-    placeholder="Ex.: comprovante da empresa alfa"
+    placeholder="Ex.: comprovantes da alfa para o fornecedor horizonte"
 )
 
 if entrada_usuario:
