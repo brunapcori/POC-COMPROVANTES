@@ -62,7 +62,7 @@ Responda ESTRITAMENTE em formato JSON puro, sem marcações markdown ou texto ex
 def extrair_criterios_ia(texto_usuario: str) -> dict:
     """Chama a LLM para converter o texto em critérios estruturados."""
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-1.5-flash",
         contents=texto_usuario,
         config=types.GenerateContentConfig(
             system_instruction=PROMPT_SISTEMA,
