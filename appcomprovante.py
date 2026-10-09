@@ -9,7 +9,7 @@ from google import genai
 from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
-# Carrega variáveis de ambiente
+# Carrega variáveis de ambiente locais (caso existam)
 load_dotenv()
 
 # Configuração da página do Streamlit
@@ -19,14 +19,20 @@ st.set_page_config(
     layout="wide"
 )
 
-# Inicializa o cliente LLM
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Resolução da chave de API: Streamlit Cloud Secrets primeiro, depois .env local
+api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+if not api_key:
+    st.error("⚠️ Chave GEMINI_API_KEY não encontrada. Configure-a em Settings > Secrets no Streamlit Cloud.")
+    st.stop()
+
+# Inicializa o cliente LLM com a chave configurada
+client = genai.Client(api_key=api_key)
 
 # Carrega o catálogo de comprovantes
 @st.cache_data
 def carregar_dados():
     df = pd.read_csv("indice_comprovantes_ficticios.csv")
-    # Garante padronização nas colunas de texto para buscas insensíveis a maiúsculas
     return df
 
 df_indice = carregar_dados()
@@ -130,50 +136,3 @@ if entrada_usuario:
         with col1:
             st.markdown(f"**Empresa:** {item.get('Empresa', 'N/D')}")
             st.markdown(f"**Fornecedor:** {item.get('Fornecedor', 'N/D')}")
-            st.markdown(f"**Data:** {item.get('Data', 'N/D')}")
-            st.markdown(f"**Valor:** R\$ {item.get('Valor', 'N/D')}")
-            st.markdown(f"**Nota Fiscal:** {item.get('Nota Fiscal', 'N/D')}")
-
-        with col2:
-            st.info(f"📄 **Arquivo:** `{item.get('PDF', 'N/D')}`\n\n📌 **Página:** `{item.get('Página', 'N/D')}`")
-            
-            caminho_arquivo = item.get("PDF", "")
-            pagina = int(item.get("Página", 1))
-
-            if os.path.exists(caminho_arquivo):
-                pdf_bytes = extrair_pagina_pdf(caminho_arquivo, pagina)
-                st.download_button(
-                    label="📥 Baixar Comprovante (Página Extraída)",
-                    data=pdf_bytes,
-                    file_name=f"comprovante_p{pagina}.pdf",
-                    mime="application/pdf"
-                )
-
-    else:
-        # Cenário de múltiplos resultados para desempate do usuário
-        st.info(f"Foram encontrados **{total_encontrados}** comprovantes correspondentes. Selecione um abaixo:")
-        
-        st.dataframe(
-            resultados[["Data", "Empresa", "Fornecedor", "Valor", "Nota Fiscal", "PDF", "Página"]],
-            use_container_width=True
-        )
-
-        # Seletor para baixar/ver comprovante individual
-        opcoes = [f"Linha {idx} - Data: {row['Data']} | NF: {row['Nota Fiscal']} | Valor: R\$ {row['Valor']}" 
-                  for idx, row in resultados.iterrows()]
-        escolha = st.selectbox("Escolha o comprovante para detalhes e download:", opcoes)
-        
-        if escolha:
-            indice_selecionado = int(escolha.split(" - ")[0].replace("Linha ", ""))
-            item_sel = resultados.loc[indice_selecionado]
-            caminho_arquivo = item_sel.get("PDF", "")
-            pagina = int(item_sel.get("Página", 1))
-
-            if os.path.exists(caminho_arquivo):
-                pdf_bytes = extrair_pagina_pdf(caminho_arquivo, pagina)
-                st.download_button(
-                    label=f"📥 Baixar Comprovante da Página {pagina}",
-                    data=pdf_bytes,
-                    file_name=f"comprovante_p{pagina}.pdf",
-                    mime="application/pdf"
-                )
