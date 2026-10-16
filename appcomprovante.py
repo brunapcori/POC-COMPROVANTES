@@ -55,6 +55,9 @@ def carregar_dados():
             renomear[col] = "Página"
             
     df = df.rename(columns=renomear)
+    
+    # Remove colunas duplicadas que possam ter recebido o mesmo nome padronizado
+    df = df.loc[:, ~df.columns.duplicated()]
     return df
 
 df_indice = carregar_dados()
@@ -73,6 +76,15 @@ Regras:
   "fornecedor": null
 }
 """
+
+def extrair_valores_coluna(df: pd.DataFrame, nome_coluna: str) -> list:
+    """Extrai uma lista de strings limpa de uma coluna com segurança contra duplicações."""
+    if nome_coluna not in df.columns:
+        return []
+    col = df[nome_coluna]
+    if isinstance(col, pd.DataFrame):
+        col = col.iloc[:, 0]
+    return [str(x) for x in col.dropna().unique().tolist()]
 
 def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
     criterios = {"empresa": None, "fornecedor": None}
@@ -95,19 +107,17 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
 
     texto_limpo = texto_usuario.lower()
     if not df.empty:
-        colunas_df = list(df.columns)
-        
-        if not criterios.get("empresa") and "Empresa" in colunas_df:
-            valores_empresa = [str(x) for x in df["Empresa"].dropna().tolist()]
-            for val in set(valores_empresa):
+        # Busca termos de Empresa com segurança
+        if not criterios.get("empresa"):
+            for val in extrair_valores_coluna(df, "Empresa"):
                 palavras = [p.lower() for p in val.split() if len(p) > 2]
                 if any(p in texto_limpo for p in palavras):
                     criterios["empresa"] = val
                     break
 
-        if not criterios.get("fornecedor") and "Fornecedor" in colunas_df:
-            valores_forn = [str(x) for x in df["Fornecedor"].dropna().tolist()]
-            for val in set(valores_forn):
+        # Busca termos de Fornecedor com segurança
+        if not criterios.get("fornecedor"):
+            for val in extrair_valores_coluna(df, "Fornecedor"):
                 palavras = [p.lower() for p in val.split() if len(p) > 2]
                 if any(p in texto_limpo for p in palavras):
                     criterios["fornecedor"] = val
@@ -123,89 +133,20 @@ def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
 
     if criterios.get("empresa") and "Empresa" in resultado.columns:
         termo = str(criterios["empresa"]).strip().split()[0]
-        resultado = resultado[resultado["Empresa"].astype(str).str.contains(termo, case=False, na=False)]
+        col_empresa = resultado["Empresa"]
+        if isinstance(col_empresa, pd.DataFrame):
+            col_empresa = col_empresa.iloc[:, 0]
+        resultado = resultado[col_empresa.astype(str).str.contains(termo, case=False, na=False)]
 
     if criterios.get("fornecedor") and "Fornecedor" in resultado.columns:
         termo = str(criterios["fornecedor"]).strip().split()[0]
-        resultado = resultado[resultado["Fornecedor"].astype(str).str.contains(termo, case=False, na=False)]
+        col_forn = resultado["Fornecedor"]
+        if isinstance(col_forn, pd.DataFrame):
+            col_forn = col_forn.iloc[:, 0]
+        resultado = resultado[col_forn.astype(str).str.contains(termo, case=False, na=False)]
 
     return resultado
 
 def extrair_pagina_pdf(caminho_pdf: str, numero_pagina: int) -> bytes:
     reader = PdfReader(caminho_pdf)
     writer = PdfWriter()
-    writer.add_page(reader.pages[numero_pagina - 1])
-    buffer = io.BytesIO()
-    writer.write(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-# --- INTERFACE STREAMLIT ---
-st.title("🧾 ComprovanteIA")
-st.caption("Consulte comprovativos indicando apenas a empresa pagadora e o fornecedor")
-
-entrada_usuario = st.text_input(
-    "Como posso ajudar?",
-    placeholder="Ex.: empresa alfa no fornecedor horizonte"
-)
-
-if entrada_usuario:
-    with st.spinner("A pesquisar comprovativos..."):
-        criterios = extrair_criterios_ia(entrada_usuario, df_indice)
-        resultados = buscar_comprovantes(criterios, df_indice)
-
-    if criterios.get("empresa") or criterios.get("fornecedor"):
-        with st.expander("🔍 Critérios identificados", expanded=False):
-            st.json(criterios)
-
-    total = len(resultados)
-
-    if total == 0:
-        st.warning("Nenhum comprovativo encontrado para os termos indicados. Tente ajustar o nome da empresa ou fornecedor.")
-    else:
-        st.success(f"Foram encontrados **{total}** comprovativo(s) correspondente(s).")
-
-        colunas_mostrar = ["Data", "Empresa", "Fornecedor", "Valor", "Nota Fiscal", "PDF", "Página"]
-        st.dataframe(
-            resultados[[c for c in colunas_mostrar if c in resultados.columns]],
-            use_container_width=True
-        )
-
-        st.markdown("---")
-        st.subheader("📑 Selecionar e descarregar comprovativo")
-
-        opcoes = [
-            f"Registo #{idx} | Data: {row.get('Data', 'N/D')} | Valor: R\$ {row.get('Valor', 'N/D')} | NF: {row.get('Nota Fiscal', 'N/D')}"
-            for idx, row in resultados.iterrows()
-        ]
-
-        escolha = st.selectbox("Selecione o comprovativo na lista:", opcoes)
-
-        if escolha:
-            idx_sel = int(escolha.split(" | ")[0].replace("Registo #", ""))
-            item_sel = resultados.loc[idx_sel]
-
-            pdf_path = str(item_sel.get("PDF", ""))
-            pag_num = int(item_sel.get("Página", 1))
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Empresa:** {item_sel.get('Empresa', 'N/D')}")
-                st.write(f"**Fornecedor:** {item_sel.get('Fornecedor', 'N/D')}")
-                st.write(f"**Data:** {item_sel.get('Data', 'N/D')}")
-                st.write(f"**Valor:** R\$ {item_sel.get('Valor', 'N/D')}")
-                st.write(f"**Nota Fiscal:** {item_sel.get('Nota Fiscal', 'N/D')}")
-
-            with col2:
-                st.info(f"📄 **Ficheiro:** `{pdf_path}`\n\n📌 **Página:** `{pag_num}`")
-
-                if os.path.exists(pdf_path):
-                    pdf_bytes = extrair_pagina_pdf(pdf_path, pag_num)
-                    st.download_button(
-                        label="📥 Descarregar Comprovativo (Página Individual)",
-                        data=pdf_bytes,
-                        file_name=f"comprovativo_p{pag_num}.pdf",
-                        mime="application/pdf"
-                    )
-                else:
-                    st.warning(f"O ficheiro `{pdf_path}` não foi encontrado.")
