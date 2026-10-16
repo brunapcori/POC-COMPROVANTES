@@ -1,4 +1,3 @@
-#Início do projeto
 import os
 import json
 import io
@@ -19,13 +18,13 @@ api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-# 2. Descompactar arquivos se necessário
+# 2. Descompactar ficheiros se necessário
 ZIP_FILE = "comprovanteia_poc_consolidada.zip"
 if os.path.exists(ZIP_FILE) and not os.path.exists("indice_comprovantes_ficticios.csv"):
     with zipfile.ZipFile(ZIP_FILE, 'r') as zip_ref:
         zip_ref.extractall(".")
 
-# 3. Carregamento seguro dos dados (sem cache para não travar dados antigos)
+# 3. Carregamento e normalização segura do catálogo
 def carregar_dados():
     csv_file = "indice_comprovantes_ficticios.csv"
     if not os.path.exists(csv_file):
@@ -36,10 +35,8 @@ def carregar_dados():
     except Exception:
         df = pd.read_csv(csv_file)
         
-    # Normaliza todos os nomes das colunas (minúsculas sem espaços)
     df.columns = [str(col).strip().lower().replace(" ", "_") for col in df.columns]
 
-    # Renomeia para as colunas padronizadas esperadas na interface
     renomear = {}
     for col in df.columns:
         if "empresa" in col or "pagadora" in col:
@@ -80,7 +77,6 @@ Regras:
 def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
     criterios = {"empresa": None, "fornecedor": None}
 
-    # Tentativa com os modelos da API
     if api_key:
         for modelo in ["gemini-1.5-flash-latest", "gemini-2.0-flash", "gemini-1.5-pro-latest"]:
             try:
@@ -97,12 +93,10 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
             except Exception:
                 continue
 
-    # Verificação direta de texto sem falhas por KeyError ou AttributeError
     texto_limpo = texto_usuario.lower()
     if not df.empty:
         colunas_df = list(df.columns)
         
-        # Procura termos de Empresa
         if not criterios.get("empresa") and "Empresa" in colunas_df:
             valores_empresa = [str(x) for x in df["Empresa"].dropna().tolist()]
             for val in set(valores_empresa):
@@ -111,7 +105,6 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
                     criterios["empresa"] = val
                     break
 
-        # Procura termos de Fornecedor
         if not criterios.get("fornecedor") and "Fornecedor" in colunas_df:
             valores_forn = [str(x) for x in df["Fornecedor"].dropna().tolist()]
             for val in set(valores_forn):
@@ -162,3 +155,57 @@ if entrada_usuario:
         resultados = buscar_comprovantes(criterios, df_indice)
 
     if criterios.get("empresa") or criterios.get("fornecedor"):
+        with st.expander("🔍 Critérios identificados", expanded=False):
+            st.json(criterios)
+
+    total = len(resultados)
+
+    if total == 0:
+        st.warning("Nenhum comprovativo encontrado para os termos indicados. Tente ajustar o nome da empresa ou fornecedor.")
+    else:
+        st.success(f"Foram encontrados **{total}** comprovativo(s) correspondente(s).")
+
+        colunas_mostrar = ["Data", "Empresa", "Fornecedor", "Valor", "Nota Fiscal", "PDF", "Página"]
+        st.dataframe(
+            resultados[[c for c in colunas_mostrar if c in resultados.columns]],
+            use_container_width=True
+        )
+
+        st.markdown("---")
+        st.subheader("📑 Selecionar e descarregar comprovativo")
+
+        opcoes = [
+            f"Registo #{idx} | Data: {row.get('Data', 'N/D')} | Valor: R\$ {row.get('Valor', 'N/D')} | NF: {row.get('Nota Fiscal', 'N/D')}"
+            for idx, row in resultados.iterrows()
+        ]
+
+        escolha = st.selectbox("Selecione o comprovativo na lista:", opcoes)
+
+        if escolha:
+            idx_sel = int(escolha.split(" | ")[0].replace("Registo #", ""))
+            item_sel = resultados.loc[idx_sel]
+
+            pdf_path = str(item_sel.get("PDF", ""))
+            pag_num = int(item_sel.get("Página", 1))
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Empresa:** {item_sel.get('Empresa', 'N/D')}")
+                st.write(f"**Fornecedor:** {item_sel.get('Fornecedor', 'N/D')}")
+                st.write(f"**Data:** {item_sel.get('Data', 'N/D')}")
+                st.write(f"**Valor:** R\$ {item_sel.get('Valor', 'N/D')}")
+                st.write(f"**Nota Fiscal:** {item_sel.get('Nota Fiscal', 'N/D')}")
+
+            with col2:
+                st.info(f"📄 **Ficheiro:** `{pdf_path}`\n\n📌 **Página:** `{pag_num}`")
+
+                if os.path.exists(pdf_path):
+                    pdf_bytes = extrair_pagina_pdf(pdf_path, pag_num)
+                    st.download_button(
+                        label="📥 Descarregar Comprovativo (Página Individual)",
+                        data=pdf_bytes,
+                        file_name=f"comprovativo_p{pag_num}.pdf",
+                        mime="application/pdf"
+                    )
+                else:
+                    st.warning(f"O ficheiro `{pdf_path}` não foi encontrado.")
