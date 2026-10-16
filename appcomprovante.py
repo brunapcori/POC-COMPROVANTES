@@ -7,7 +7,7 @@ import streamlit as st
 import google.generativeai as genai
 from pypdf import PdfReader, PdfWriter
 
-# 1. Configuração da página da aplicação
+# 1. Configuração inicial da página
 st.set_page_config(
     page_title="ComprovanteIA",
     page_icon="🧾",
@@ -69,7 +69,6 @@ def carregar_dados():
             renomear[col] = "Página"
             
     df = df.rename(columns=renomear)
-    # Remove eventuais colunas com nomes duplicados, mantendo apenas a primeira
     df = df.loc[:, ~df.columns.duplicated()]
     return df
 
@@ -91,13 +90,13 @@ Regras:
 """
 
 def extrair_valores_seguros(df: pd.DataFrame, coluna: str) -> list:
-    """Extrai uma lista limpa de valores mesmo se o DataFrame tiver colunas repetidas."""
+    """Extrai uma lista de strings limpa de forma totalmente compatível com PyArrow e Pandas."""
     if coluna not in df.columns:
         return []
     dados = df[coluna]
-    # Se for DataFrame (colunas duplicadas) ou Series, transforma em array 1D
-    valores = dados.values.flatten()
-    return [str(x).strip() for x in valores if pd.notna(x) and str(x).strip() != ""]
+    if isinstance(dados, pd.DataFrame):
+        dados = dados.iloc[:, 0]
+    return [str(x).strip() for x in dados.dropna().astype(str).tolist() if str(x).strip() != ""]
 
 def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
     criterios = {"empresa": None, "fornecedor": None}
@@ -120,7 +119,7 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
 
     texto_limpo = texto_usuario.lower()
     if not df.empty:
-        # Busca termos de Empresa
+        # Identificação de termos de Empresa
         if not criterios.get("empresa"):
             for val in set(extrair_valores_seguros(df, "Empresa")):
                 palavras = [p.lower() for p in val.split() if len(p) > 2]
@@ -128,7 +127,7 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
                     criterios["empresa"] = val
                     break
 
-        # Busca termos de Fornecedor
+        # Identificação de termos de Fornecedor
         if not criterios.get("fornecedor"):
             for val in set(extrair_valores_seguros(df, "Fornecedor")):
                 palavras = [p.lower() for p in val.split() if len(p) > 2]
@@ -169,7 +168,7 @@ def extrair_pagina_pdf(caminho_pdf: str, numero_pagina: int) -> bytes:
     buffer.seek(0)
     return buffer.getvalue()
 
-# 5. Entrada do utilizador
+# 5. Entrada do utilizador e apresentação de resultados
 entrada_usuario = st.text_input(
     "Como posso ajudar?",
     placeholder="Ex.: empresa alfa para o fornecedor horizonte"
