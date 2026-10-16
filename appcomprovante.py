@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import io
 import zipfile
@@ -36,7 +37,7 @@ if os.path.exists(ZIP_FILE) and not os.path.exists(CSV_FILE):
     except Exception as e:
         st.error(f"Erro ao descompactar ficheiro ZIP: {e}")
 
-# 4. Carregar e padronizar os dados
+# 4. Carregar e mapear dados do CSV
 def carregar_dados():
     if not os.path.exists(CSV_FILE):
         return pd.DataFrame()
@@ -65,8 +66,10 @@ def carregar_dados():
             renomear[col] = "Nota Fiscal"
         elif "pdf" in col or "arquivo" in col:
             renomear[col] = "PDF"
-        elif "pag" in col:
-            renomear[col] = "Página"
+        elif "pagina" in col or "pag" in col:
+            # Só assume como Página se não contiver palavras de pagamento
+            if "pagamento" not in col and "paga" not in col:
+                renomear[col] = "Página"
             
     df = df.rename(columns=renomear)
     df = df.loc[:, ~df.columns.duplicated()]
@@ -90,7 +93,6 @@ Regras:
 """
 
 def extrair_valores_seguros(df: pd.DataFrame, coluna: str) -> list:
-    """Extrai uma lista de strings limpa de forma totalmente compatível com PyArrow e Pandas."""
     if coluna not in df.columns:
         return []
     dados = df[coluna]
@@ -119,7 +121,6 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
 
     texto_limpo = texto_usuario.lower()
     if not df.empty:
-        # Identificação de termos de Empresa
         if not criterios.get("empresa"):
             for val in set(extrair_valores_seguros(df, "Empresa")):
                 palavras = [p.lower() for p in val.split() if len(p) > 2]
@@ -127,7 +128,6 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
                     criterios["empresa"] = val
                     break
 
-        # Identificação de termos de Fornecedor
         if not criterios.get("fornecedor"):
             for val in set(extrair_valores_seguros(df, "Fornecedor")):
                 palavras = [p.lower() for p in val.split() if len(p) > 2]
@@ -159,16 +159,43 @@ def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
 
     return resultado
 
+def converter_para_inteiro(valor_pagina) -> int:
+    """Extrai apenas dígitos numéricos de forma segura para o número da página."""
+    if pd.isna(valor_pagina):
+        return 1
+    numeros = re.findall(r'\d+', str(valor_pagina))
+    if numeros:
+        return int(numeros[0])
+    return 1
+
+def localizar_ficheiro_pdf(caminho_original: str) -> str:
+    """Localiza o ficheiro PDF mesmo que o caminho venha com barras invertidas ou diretórios relativos."""
+    if not caminho_original:
+        return ""
+    # Normaliza barras
+    caminho_limpo = caminho_original.replace("\\", os.sep).replace("/", os.sep).strip()
+    if os.path.exists(caminho_limpo):
+        return caminho_limpo
+
+    # Procura pelo nome do ficheiro em qualquer subpasta
+    nome_ficheiro = os.path.basename(caminho_limpo)
+    for raiz, _, ficheiros in os.walk("."):
+        if nome_ficheiro in ficheiros:
+            return os.path.join(raiz, nome_ficheiro)
+            
+    return caminho_original
+
 def extrair_pagina_pdf(caminho_pdf: str, numero_pagina: int) -> bytes:
     reader = PdfReader(caminho_pdf)
     writer = PdfWriter()
-    writer.add_page(reader.pages[numero_pagina - 1])
+    indice = max(0, min(numero_pagina - 1, len(reader.pages) - 1))
+    writer.add_page(reader.pages[indice])
     buffer = io.BytesIO()
     writer.write(buffer)
     buffer.seek(0)
     return buffer.getvalue()
 
-# 5. Entrada do utilizador e apresentação de resultados
+# 5. Entrada do utilizador e apresentação
 entrada_usuario = st.text_input(
     "Como posso ajudar?",
     placeholder="Ex.: empresa alfa para o fornecedor horizonte"
@@ -190,10 +217,10 @@ if entrada_usuario:
     else:
         st.success(f"Foram encontrados **{total}** comprovativo(s) correspondente(s).")
 
-        colunas_mostrar = ["Data", "Empresa", "Fornecedor", "Valor", "Nota Fiscal", "PDF", "Página"]
+        colunas_mostrar = ["Data", "Empresa", "Fornecedor", "Valor", "Nota Fiscal", "PDF"]
         st.dataframe(
             resultados[[c for c in colunas_mostrar if c in resultados.columns]],
-            use_container_width=True
+            width="stretch"
         )
 
         st.markdown("---")
@@ -210,8 +237,13 @@ if entrada_usuario:
             idx_sel = int(escolha.split(" | ")[0].replace("Registo #", ""))
             item_sel = resultados.loc[idx_sel]
 
-            pdf_path = str(item_sel.get("PDF", ""))
-            pag_num = int(item_sel.get("Página", 1))
+            # Obtenção segura do caminho do ficheiro e da página
+            pdf_path_original = str(item_sel.get("PDF", ""))
+            pdf_path = localizar_ficheiro_pdf(pdf_path_original)
+            
+            # Obtém a página procurando qualquer coluna que represente a página
+            col_pagina_val = item_sel.get("Página") or item_sel.get("pagina") or 1
+            pag_num = converter_para_inteiro(col_pagina_val)
 
             col1, col2 = st.columns(2)
             with col1:
@@ -222,7 +254,7 @@ if entrada_usuario:
                 st.write(f"**Nota Fiscal:** {item_sel.get('Nota Fiscal', 'N/D')}")
 
             with col2:
-                st.info(f"📄 **Ficheiro:** `{pdf_path}`\n\n📌 **Página:** `{pag_num}`")
+                st.info(f"📄 **Ficheiro:** `{os.path.basename(pdf_path_original)}`\n\n📌 **Página:** `{pag_num}`")
 
                 if os.path.exists(pdf_path):
                     pdf_bytes = extrair_pagina_pdf(pdf_path, pag_num)
@@ -233,4 +265,4 @@ if entrada_usuario:
                         mime="application/pdf"
                     )
                 else:
-                    st.warning(f"O ficheiro `{pdf_path}` não foi encontrado no servidor.")
+                    st.warning(f"O ficheiro `{pdf_path_original}` não foi encontrado no servidor. Verifique se o ficheiro consolidado `.zip` foi descompactado.")
