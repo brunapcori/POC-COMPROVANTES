@@ -26,18 +26,18 @@ if api_key:
     except Exception as e:
         st.warning(f"Aviso de configuração da API: {e}")
 
-# 3. Descompactar ficheiros se necessário
-ZIP_FILE = "comprovanteia_poc_consolidada.zip"
+# 3. Descompactar automaticamente ficheiros .zip existentes
+for item in os.listdir("."):
+    if item.endswith(".zip"):
+        try:
+            with zipfile.ZipFile(item, 'r') as zip_ref:
+                zip_ref.extractall(".")
+        except Exception as e:
+            st.error(f"Erro ao extrair {item}: {e}")
+
+# 4. Carregar e mapear dados do catálogo CSV
 CSV_FILE = "indice_comprovantes_ficticios.csv"
 
-if os.path.exists(ZIP_FILE) and not os.path.exists(CSV_FILE):
-    try:
-        with zipfile.ZipFile(ZIP_FILE, 'r') as zip_ref:
-            zip_ref.extractall(".")
-    except Exception as e:
-        st.error(f"Erro ao descompactar ficheiro ZIP: {e}")
-
-# 4. Carregar e mapear dados do CSV
 def carregar_dados():
     if not os.path.exists(CSV_FILE):
         return pd.DataFrame()
@@ -67,7 +67,6 @@ def carregar_dados():
         elif "pdf" in col or "arquivo" in col:
             renomear[col] = "PDF"
         elif "pagina" in col or "pag" in col:
-            # Só assume como Página se não contiver palavras de pagamento
             if "pagamento" not in col and "paga" not in col:
                 renomear[col] = "Página"
             
@@ -160,7 +159,7 @@ def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
     return resultado
 
 def converter_para_inteiro(valor_pagina) -> int:
-    """Extrai apenas dígitos numéricos de forma segura para o número da página."""
+    """Extrai com segurança dígitos numéricos para o número da página."""
     if pd.isna(valor_pagina):
         return 1
     numeros = re.findall(r'\d+', str(valor_pagina))
@@ -169,15 +168,14 @@ def converter_para_inteiro(valor_pagina) -> int:
     return 1
 
 def localizar_ficheiro_pdf(caminho_original: str) -> str:
-    """Localiza o ficheiro PDF mesmo que o caminho venha com barras invertidas ou diretórios relativos."""
+    """Localiza o ficheiro PDF em qualquer subpasta descompactada."""
     if not caminho_original:
         return ""
-    # Normaliza barras
+    
     caminho_limpo = caminho_original.replace("\\", os.sep).replace("/", os.sep).strip()
     if os.path.exists(caminho_limpo):
         return caminho_limpo
 
-    # Procura pelo nome do ficheiro em qualquer subpasta
     nome_ficheiro = os.path.basename(caminho_limpo)
     for raiz, _, ficheiros in os.walk("."):
         if nome_ficheiro in ficheiros:
@@ -237,11 +235,9 @@ if entrada_usuario:
             idx_sel = int(escolha.split(" | ")[0].replace("Registo #", ""))
             item_sel = resultados.loc[idx_sel]
 
-            # Obtenção segura do caminho do ficheiro e da página
             pdf_path_original = str(item_sel.get("PDF", ""))
             pdf_path = localizar_ficheiro_pdf(pdf_path_original)
             
-            # Obtém a página procurando qualquer coluna que represente a página
             col_pagina_val = item_sel.get("Página") or item_sel.get("pagina") or 1
             pag_num = converter_para_inteiro(col_pagina_val)
 
@@ -265,4 +261,4 @@ if entrada_usuario:
                         mime="application/pdf"
                     )
                 else:
-                    st.warning(f"O ficheiro `{pdf_path_original}` não foi encontrado no servidor. Verifique se o ficheiro consolidado `.zip` foi descompactado.")
+                    st.warning(f"O ficheiro `{pdf_path_original}` não foi encontrado no servidor.")
