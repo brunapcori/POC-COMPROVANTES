@@ -183,18 +183,62 @@ df_indice = carregar_dados()
 
 PROMPT_SISTEMA = """
 Você é o assistente de busca do sistema corporativo ComprovanteIA da Ellenco.
-Sua responsabilidade é extrair exclusivamente o nome ou termo distintivo da empresa pagadora e do fornecedor.
+Sua responsabilidade é extrair o nome ou termo distintivo da empresa pagadora, do fornecedor e o valor numérico, se mencionados pelo usuário.
 
 Instruções:
-- No campo "empresa", isole o nome distintivo (ex: se citar "Empresa Delta", retorne "Delta").
-- No campo "fornecedor", isole o nome distintivo (ex: se citar "Fornecedor Horizonte", retorne "Horizonte").
-- Ignore datas, valores ou notas fiscais.
+- No campo "empresa", isole o nome distintivo (ex: se citar "Empresa Delta", retorne "Delta"). Caso não mencionado, retorne null.
+- No campo "fornecedor", isole o nome distintivo (ex: se citar "Fornecedor Horizonte", retorne "Horizonte"). Caso não mencionado, retorne null.
+- No campo "valor", extraia o valor numérico em formato float padrão (ex: se citar "R\$ 8.500,00", retorne 8500.0; se citar "18.790,40", retorne 18790.4). Caso não mencionado, retorne null.
 - Retorne estritamente um JSON com a estrutura:
 {
   "empresa": null,
-  "fornecedor": null
+  "fornecedor": null,
+  "valor": null
 }
 """
+
+def converter_texto_para_float(valor_str) -> float:
+    """Converte textos monetários brasileiros (ex: 'R\$ 8.500,00' ou '18790.4') em float."""
+    if valor_str is None or pd.isna(valor_str):
+        return None
+    if isinstance(valor_str, (int, float)):
+        return float(valor_str)
+    
+    limpo = str(valor_str).replace("R$", "").replace("r$", "").strip()
+    # Mantém apenas dígitos, pontos e vírgulas
+    match = re.search(r'[\d.,]+', limpo)
+    if not match:
+        return None
+    num_str = match.group(0)
+
+    # Se tiver ponto e vírgula (ex: 8.500,00 -> 8500.00)
+    if "." in num_str and "," in num_str:
+        if num_str.rfind(",") > num_str.rfind("."):
+            num_str = num_str.replace(".", "").replace(",", ".")
+        else:
+            num_str = num_str.replace(",", "")
+    # Se tiver apenas vírgula (ex: 8500,00 -> 8500.00)
+    elif "," in num_str:
+        num_str = num_str.replace(",", ".")
+    # Se tiver apenas ponto, verifica se é separador de milhar (ex: 8.500 -> 8500)
+    elif "." in num_str:
+        partes = num_str.split(".")
+        if len(partes[-1]) == 3 and len(partes) > 1:
+            num_str = num_str.replace(".", "")
+
+    try:
+        return float(num_str)
+    except Exception:
+        return None
+
+def extrair_valor_do_texto_usuario(texto: str):
+    """Extrai valores numéricos/monetários diretamente da frase digitada pelo usuário."""
+    # Remove datas no formato DD/MM/YYYY ou YYYY-MM-DD para não confundir com valores
+    texto_sem_data = re.sub(r'\b\d{2,4}[-/]\d{2}[-/]\d{2,4}\b', '', texto)
+    padroes = re.findall(r'(?:R\$\s*)?\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|(?:R\$\s*)?\d+(?:[.,]\d{1,2})?', texto_sem_data)
+    if padroes:
+        return converter_texto_para_float(padroes[0])
+    return None
 
 def extrair_valores_seguros(df: pd.DataFrame, coluna: str) -> list:
     if coluna not in df.columns:
@@ -205,7 +249,7 @@ def extrair_valores_seguros(df: pd.DataFrame, coluna: str) -> list:
     return [str(x).strip() for x in dados.dropna().astype(str).tolist() if str(x).strip() != ""]
 
 def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
-    criterios = {"empresa": None, "fornecedor": None}
+    criterios = {"empresa": None, "fornecedor": None, "valor": None}
 
     if api_key:
         for modelo in ["gemini-1.5-flash-latest", "gemini-2.0-flash", "gemini-1.5-pro-latest"]:
@@ -218,13 +262,15 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
                 res = model.generate_content(texto_usuario)
                 dados = json.loads(res.text)
                 if isinstance(dados, dict):
-                    criterios = dados
+                    criterios["empresa"] = dados.get("empresa")
+                    criterios["fornecedor"] = dados.get("fornecedor")
+                    criterios["valor"] = converter_texto_para_float(dados.get("valor"))
                     break
             except Exception:
                 continue
 
     texto_limpo = texto_usuario.lower()
-    palavras_ignorar = {"empresa", "empresas", "fornecedor", "fornecedores", "para", "comprovante", "comprovantes", "pagamento", "pagamentos", "de", "da", "do"}
+    palavras_ignorar = {"empresa", "empresas", "fornecedor", "fornecedores", "para", "comprovante", "comprovantes", "pagamento", "pagamentos", "de", "da", "do", "valor", "reais"}
 
     if not df.empty:
         if not criterios.get("empresa"):
@@ -247,6 +293,10 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
                             break
                     break
 
+    # Fallback para capturar o valor diretamente do texto caso a IA não tenha preenchido
+    if criterios.get("valor") is None:
+        criterios["valor"] = extrair_valor_do_texto_usuario(texto_usuario)
+
     return criterios
 
 def isolar_termo_relevante(termo: str) -> str:
@@ -260,8 +310,13 @@ def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or not criterios:
         return pd.DataFrame()
 
+    # Se nenhum critério válido foi identificado, não retorna a tabela inteira
+    if not criterios.get("empresa") and not criterios.get("fornecedor") and criterios.get("valor") is None:
+        return pd.DataFrame()
+
     resultado = df.copy()
 
+    # 1. Filtro por Empresa
     if criterios.get("empresa") and "Empresa" in resultado.columns:
         termo_emp = isolar_termo_relevante(criterios["empresa"])
         col_empresa = resultado["Empresa"]
@@ -269,12 +324,23 @@ def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
             col_empresa = col_empresa.iloc[:, 0]
         resultado = resultado[col_empresa.astype(str).str.contains(termo_emp, case=False, na=False)]
 
+    # 2. Filtro por Fornecedor
     if criterios.get("fornecedor") and "Fornecedor" in resultado.columns:
         termo_forn = isolar_termo_relevante(criterios["fornecedor"])
         col_forn = resultado["Fornecedor"]
         if isinstance(col_forn, pd.DataFrame):
             col_forn = col_forn.iloc[:, 0]
         resultado = resultado[col_forn.astype(str).str.contains(termo_forn, case=False, na=False)]
+
+    # 3. Filtro por Valor
+    if criterios.get("valor") is not None and "Valor" in resultado.columns:
+        valor_busca = float(criterios["valor"])
+        col_val = resultado["Valor"]
+        if isinstance(col_val, pd.DataFrame):
+            col_val = col_val.iloc[:, 0]
+        valores_df = col_val.apply(converter_texto_para_float)
+        # Compara com margem de tolerância para casas decimais (0.01)
+        resultado = resultado[valores_df.apply(lambda x: x is not None and abs(x - valor_busca) < 0.01)]
 
     return resultado
 
@@ -342,7 +408,7 @@ def gerar_zip_comprovantes(lista_itens: list) -> bytes:
 # 5. Interface de Pesquisa
 entrada_usuario = st.text_input(
     "Localizar Comprovante por Linguagem Natural",
-    placeholder="Ex.: Empresa Delta para o fornecedor Horizonte"
+    placeholder="Ex.: pagamentos de R\$ 8.500,00 ou Empresa Delta para o fornecedor Horizonte"
 )
 
 if entrada_usuario:
@@ -350,14 +416,14 @@ if entrada_usuario:
         criterios = extrair_criterios_ia(entrada_usuario, df_indice)
         resultados = buscar_comprovantes(criterios, df_indice)
 
-    if criterios.get("empresa") or criterios.get("fornecedor"):
+    if criterios.get("empresa") or criterios.get("fornecedor") or criterios.get("valor") is not None:
         with st.expander("🔍 Parâmetros de Filtro Identificados", expanded=False):
             st.json(criterios)
 
     total = len(resultados)
 
     if total == 0:
-        st.warning("Nenhum comprovante correspondente aos termos pesquisados. Verifique se o nome da empresa ou fornecedor está correto.")
+        st.warning("Nenhum comprovante correspondente aos termos pesquisados. Verifique o nome da empresa, fornecedor ou valor informado.")
     else:
         st.success(f"**{total}** comprovante(s) localizado(s) com sucesso para o filtro solicitado.")
 
@@ -411,11 +477,9 @@ if entrada_usuario:
                 else:
                     valores_num = []
                     for it in itens_selecionados:
-                        val_raw = str(it.get('Valor', '0')).replace(',', '.')
-                        try:
-                            valores_num.append(float(re.findall(r"[-+]?\d*\.\d+|\d+", val_raw)[0]))
-                        except Exception:
-                            pass
+                        val_conv = converter_texto_para_float(it.get('Valor', 0))
+                        if val_conv is not None:
+                            valores_num.append(val_conv)
                     total_soma = sum(valores_num)
 
                     st.markdown(f"""
