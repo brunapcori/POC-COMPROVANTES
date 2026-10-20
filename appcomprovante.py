@@ -18,7 +18,6 @@ st.set_page_config(
 # Estilização CSS inspirada no portal corporativo da Ellenco
 st.markdown("""
 <style>
-    /* Variáveis e paleta Ellenco */
     :root {
         --ellenco-blue: #0A2B5E;
         --ellenco-blue-dark: #071E42;
@@ -27,7 +26,6 @@ st.markdown("""
         --ellenco-border: #E2E8F0;
     }
 
-    /* Cabeçalho corporativo */
     .ellenco-header {
         display: flex;
         align-items: center;
@@ -61,7 +59,6 @@ st.markdown("""
         border: 1px solid rgba(255, 255, 255, 0.25);
     }
 
-    /* Cartão de Detalhes do Comprovante */
     .comprovante-card {
         background-color: #FFFFFF;
         border: 1px solid var(--ellenco-border);
@@ -69,7 +66,7 @@ st.markdown("""
         padding: 1.5rem;
         border-radius: 8px;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-        margin-top: 1rem;
+        margin-top: 0.5rem;
     }
     .card-title {
         color: #0A2B5E;
@@ -96,10 +93,9 @@ st.markdown("""
     .card-value-highlight {
         color: #D7282F;
         font-weight: 700;
-        font-size: 1.1rem;
+        font-size: 1.15rem;
     }
 
-    /* Ajuste para botões */
     div.stButton > button:first-child, div.stDownloadButton > button:first-child {
         background-color: #0A2B5E;
         color: white;
@@ -116,7 +112,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Banner superior da Ellenco
+# Banner corporativo
 st.markdown("""
 <div class="ellenco-header">
     <div>
@@ -135,7 +131,7 @@ if api_key:
     except Exception as e:
         st.warning(f"Aviso de configuração da API: {e}")
 
-# 3. Descompactar arquivos .zip do repositório automaticamente
+# 3. Descompactar arquivos .zip automaticamente
 for item in os.listdir("."):
     if item.endswith(".zip"):
         try:
@@ -187,11 +183,11 @@ df_indice = carregar_dados()
 
 PROMPT_SISTEMA = """
 Você é o assistente de busca do sistema corporativo ComprovanteIA da Ellenco.
-Sua responsabilidade é extrair exclusivamente o nome ou identificador específico da empresa pagadora e do fornecedor.
+Sua responsabilidade é extrair exclusivamente o nome ou termo distintivo da empresa pagadora e do fornecedor.
 
-Instruções cruciais:
-- No campo "empresa", isole o nome distintivo (por exemplo, se o usuário citar "Empresa Delta", extraia apenas "Delta"; se citar "Alfa Engenharia", extraia "Alfa").
-- No campo "fornecedor", isole o nome distintivo (por exemplo, se citar "Fornecedor Horizonte", extraia "Horizonte").
+Instruções:
+- No campo "empresa", isole o nome distintivo (ex: se citar "Empresa Delta", retorne "Delta").
+- No campo "fornecedor", isole o nome distintivo (ex: se citar "Fornecedor Horizonte", retorne "Horizonte").
 - Ignore datas, valores ou notas fiscais.
 - Retorne estritamente um JSON com a estrutura:
 {
@@ -227,7 +223,6 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
             except Exception:
                 continue
 
-    # Fallback refinado sem palavras genéricas como "empresa" ou "fornecedor"
     texto_limpo = texto_usuario.lower()
     palavras_ignorar = {"empresa", "empresas", "fornecedor", "fornecedores", "para", "comprovante", "comprovantes", "pagamento", "pagamentos", "de", "da", "do"}
 
@@ -236,7 +231,6 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
             for val in set(extrair_valores_seguros(df, "Empresa")):
                 palavras = [p.lower() for p in val.split() if p.lower() not in palavras_ignorar and len(p) > 2]
                 if any(p in texto_limpo for p in palavras):
-                    # Salva apenas a palavra distintiva (ex: Delta)
                     for p in palavras:
                         if p in texto_limpo:
                             criterios["empresa"] = p
@@ -256,7 +250,6 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
     return criterios
 
 def isolar_termo_relevante(termo: str) -> str:
-    """Remove termos genéricos como 'empresa', 'ltda', 's.a.' para buscar com precisão exata."""
     if not termo:
         return ""
     termos_ignorar = {"empresa", "fornecedor", "ltda", "ltda.", "s.a.", "sa", "s/a", "de", "da", "do"}
@@ -269,7 +262,6 @@ def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
 
     resultado = df.copy()
 
-    # Filtra por termo específico da Empresa (ex: "Delta")
     if criterios.get("empresa") and "Empresa" in resultado.columns:
         termo_emp = isolar_termo_relevante(criterios["empresa"])
         col_empresa = resultado["Empresa"]
@@ -277,7 +269,6 @@ def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
             col_empresa = col_empresa.iloc[:, 0]
         resultado = resultado[col_empresa.astype(str).str.contains(termo_emp, case=False, na=False)]
 
-    # Filtra por termo específico do Fornecedor (ex: "Horizonte")
     if criterios.get("fornecedor") and "Fornecedor" in resultado.columns:
         termo_forn = isolar_termo_relevante(criterios["fornecedor"])
         col_forn = resultado["Fornecedor"]
@@ -316,6 +307,40 @@ def extrair_pagina_pdf(caminho_pdf: str, numero_pagina: int) -> bytes:
     buffer.seek(0)
     return buffer.getvalue()
 
+def gerar_pdf_consolidado(lista_itens: list) -> bytes:
+    """Mescla as páginas selecionadas de diferentes comprovantes em um único PDF."""
+    writer = PdfWriter()
+    for item in lista_itens:
+        pdf_path_original = str(item.get("PDF", ""))
+        pdf_path = localizar_ficheiro_pdf(pdf_path_original)
+        pag_num = converter_para_inteiro(item.get("Página") or item.get("pagina") or 1)
+        if os.path.exists(pdf_path):
+            reader = PdfReader(pdf_path)
+            indice = max(0, min(pag_num - 1, len(reader.pages) - 1))
+            writer.add_page(reader.pages[indice])
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def gerar_zip_comprovantes(lista_itens: list) -> bytes:
+    """Gera um arquivo ZIP com os PDFs individuais de cada comprovante selecionado."""
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for idx, item in enumerate(lista_itens):
+            pdf_path_original = str(item.get("PDF", ""))
+            pdf_path = localizar_ficheiro_pdf(pdf_path_original)
+            pag_num = converter_para_inteiro(item.get("Página") or item.get("pagina") or 1)
+            emp = str(item.get("Empresa", "empresa")).replace(" ", "_")
+            nf = str(item.get("Nota Fiscal", f"NF_{idx}")).replace(" ", "_")
+            nome_arquivo_individual = f"comprovante_{emp}_{nf}_p{pag_num}.pdf"
+
+            if os.path.exists(pdf_path):
+                pdf_bytes = extrair_pagina_pdf(pdf_path, pag_num)
+                zf.writestr(nome_arquivo_individual, pdf_bytes)
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
 # 5. Interface de Pesquisa
 entrada_usuario = st.text_input(
     "Localizar Comprovante por Linguagem Natural",
@@ -338,7 +363,7 @@ if entrada_usuario:
     else:
         st.success(f"**{total}** comprovante(s) localizado(s) com sucesso para o filtro solicitado.")
 
-        # Tabela corporativa
+        # Exibição da tabela de comprovantes
         colunas_mostrar = ["Data", "Empresa", "Fornecedor", "Valor", "Nota Fiscal", "PDF"]
         st.dataframe(
             resultados[[c for c in colunas_mostrar if c in resultados.columns]],
@@ -348,55 +373,85 @@ if entrada_usuario:
         st.markdown("---")
         st.subheader("📑 Visualização e Download do Documento")
 
-        opcoes = [
-            f"Registro #{idx} | Data: {row.get('Data', 'N/D')} | Valor: R\$ {row.get('Valor', 'N/D')} | NF: {row.get('Nota Fiscal', 'N/D')}"
+        # Mapeamento para opções legíveis
+        mapa_opcoes = {
+            f"Registro #{idx} | Data: {row.get('Data', 'N/D')} | Valor: R\$ {row.get('Valor', 'N/D')} | NF: {row.get('Nota Fiscal', 'N/D')}": idx
             for idx, row in resultados.iterrows()
-        ]
+        }
+        todas_opcoes = list(mapa_opcoes.keys())
 
-        escolha = st.selectbox("Selecione o registro para emitir o PDF:", opcoes)
+        # Botão para marcar todos
+        col_ctrl1, col_ctrl2 = st.columns([1, 3])
+        with col_ctrl1:
+            selecionar_tudo = st.checkbox("Selecionar todos os comprovantes filtrados", value=False)
 
-        if escolha:
-            idx_sel = int(escolha.split(" | ")[0].replace("Registro #", ""))
-            item_sel = resultados.loc[idx_sel]
+        itens_default = todas_opcoes if selecionar_tudo else ([todas_opcoes[0]] if todas_opcoes else [])
 
-            pdf_path_original = str(item_sel.get("PDF", ""))
-            pdf_path = localizar_ficheiro_pdf(pdf_path_original)
-            
-            col_pagina_val = item_sel.get("Página") or item_sel.get("pagina") or 1
-            pag_num = converter_para_inteiro(col_pagina_val)
+        escolhas = st.multiselect(
+            "Selecione um ou mais comprovantes para emitir:",
+            options=todas_opcoes,
+            default=itens_default
+        )
 
-            # Cartão de Detalhes
+        if escolhas:
+            indices_selecionados = [mapa_opcoes[opt] for opt in escolhas]
+            itens_selecionados = [resultados.loc[i] for i in indices_selecionados]
+            qtd_sel = len(itens_selecionados)
+
             col_detalhes, col_download = st.columns([1.5, 1])
 
             with col_detalhes:
-                st.markdown(f"""
-                <div class="comprovante-card">
-                    <div class="card-title">Resumo do Lançamento</div>
-                    <div class="card-row"><span class="card-label">Empresa Pagadora:</span> <span class="card-value">{item_sel.get('Empresa', 'N/D')}</span></div>
-                    <div class="card-row"><span class="card-label">Fornecedor / Favorecido:</span> <span class="card-value">{item_sel.get('Fornecedor', 'N/D')}</span></div>
-                    <div class="card-row"><span class="card-label">Data de Liquidação:</span> <span class="card-value">{item_sel.get('Data', 'N/D')}</span></div>
-                    <div class="card-row"><span class="card-label">Documento / Nota Fiscal:</span> <span class="card-value">{item_sel.get('Nota Fiscal', 'N/D')}</span></div>
-                    <div class="card-row"><span class="card-label">Valor Liquidado:</span> <span class="card-value-highlight">R\$ {item_sel.get('Valor', 'N/D')}</span></div>
-                </div>
-                """, unsafe_allow_html=True)
+                if qtd_sel == 1:
+                    item_sel = itens_selecionados[0]
+                    st.markdown(f"""
+                    <div class="comprovante-card">
+                        <div class="card-title">Resumo do Lançamento</div>
+                        <div class="card-row"><span class="card-label">Empresa Pagadora:</span> <span class="card-value">{item_sel.get('Empresa', 'N/D')}</span></div>
+                        <div class="card-row"><span class="card-label">Fornecedor / Favorecido:</span> <span class="card-value">{item_sel.get('Fornecedor', 'N/D')}</span></div>
+                        <div class="card-row"><span class="card-label">Data de Liquidação:</span> <span class="card-value">{item_sel.get('Data', 'N/D')}</span></div>
+                        <div class="card-row"><span class="card-label">Documento / Nota Fiscal:</span> <span class="card-value">{item_sel.get('Nota Fiscal', 'N/D')}</span></div>
+                        <div class="card-row"><span class="card-label">Valor Liquidado:</span> <span class="card-value-highlight">R\$ {item_sel.get('Valor', 'N/D')}</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    # Cálculo do valor acumulado
+                    valores_num = []
+                    for it in itens_selecionados:
+                        val_raw = str(it.get('Valor', '0')).replace(',', '.')
+                        try:
+                            valores_num.append(float(re.findall(r"[-+]?\d*\.\d+|\d+", val_raw)[0]))
+                        except Exception:
+                            pass
+                    total_soma = sum(valores_num)
+
+                    st.markdown(f"""
+                    <div class="comprovante-card">
+                        <div class="card-title">Resumo do Lote Selecionado</div>
+                        <div class="card-row"><span class="card-label">Quantidade de Comprovantes:</span> <span class="card-value">{qtd_sel} documentos</span></div>
+                        <div class="card-row"><span class="card-label">Empresas Envolvidas:</span> <span class="card-value">{', '.join(set([str(it.get('Empresa', '')) for it in itens_selecionados]))}</span></div>
+                        <div class="card-row"><span class="card-label">Valor Total do Lote:</span> <span class="card-value-highlight">R\$ {total_soma:,.2f}</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
             with col_download:
-                st.markdown(f"""
-                <div class="comprovante-card" style="border-left-color: #D7282F;">
-                    <div class="card-title">Arquivo Consolidado</div>
-                    <div class="card-row"><span class="card-label">Arquivo:</span> <span class="card-value">{os.path.basename(pdf_path_original)}</span></div>
-                    <div class="card-row"><span class="card-label">Página do Comprovante:</span> <span class="card-value">Pág. {pag_num}</span></div>
-                </div>
-                """, unsafe_allow_html=True)
-                st.write("")
-                
-                if os.path.exists(pdf_path):
-                    pdf_bytes = extrair_pagina_pdf(pdf_path, pag_num)
-                    st.download_button(
-                        label="📥 Baixar Comprovante (Página Individual em PDF)",
-                        data=pdf_bytes,
-                        file_name=f"comprovante_{item_sel.get('Empresa','doc')}_pag{pag_num}.pdf",
-                        mime="application/pdf"
-                    )
-                else:
-                    st.error(f"O arquivo `{os.path.basename(pdf_path_original)}` não foi localizado no diretório extraído.")
+                if qtd_sel == 1:
+                    item_sel = itens_selecionados[0]
+                    pdf_path_original = str(item_sel.get("PDF", ""))
+                    pdf_path = localizar_ficheiro_pdf(pdf_path_original)
+                    pag_num = converter_para_inteiro(item_sel.get("Página") or item_sel.get("pagina") or 1)
+
+                    st.markdown(f"""
+                    <div class="comprovante-card" style="border-left-color: #D7282F;">
+                        <div class="card-title">Arquivo Consolidado</div>
+                        <div class="card-row"><span class="card-label">Arquivo:</span> <span class="card-value">{os.path.basename(pdf_path_original)}</span></div>
+                        <div class="card-row"><span class="card-label">Página do Comprovante:</span> <span class="card-value">Pág. {pag_num}</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.write("")
+
+                    if os.path.exists(pdf_path):
+                        pdf_bytes = extrair_pagina_pdf(pdf_path, pag_num)
+                        st.download_button(
+                            label="📥 Baixar Comprovante (PDF Individual)",
+                            data=pdf_bytes,
+                            file_name=f"comprovante_{item_sel.get('Empresa','doc')}_pag
