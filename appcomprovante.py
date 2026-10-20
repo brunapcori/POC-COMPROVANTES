@@ -59,6 +59,59 @@ st.markdown("""
         border: 1px solid rgba(255, 255, 255, 0.25);
     }
 
+    /* Estilo dos Cabeçalhos de Etapa */
+    .step-box {
+        background-color: #F8FAFC;
+        border: 1px solid #E2E8F0;
+        border-left: 5px solid #0A2B5E;
+        padding: 1rem 1.4rem;
+        border-radius: 8px;
+        margin-top: 1.5rem;
+        margin-bottom: 1rem;
+    }
+    .step-box-2 {
+        background-color: #FFF5F5;
+        border: 1px solid #FED7D7;
+        border-left: 5px solid #D7282F;
+        padding: 1rem 1.4rem;
+        border-radius: 8px;
+        margin-top: 2rem;
+        margin-bottom: 1rem;
+    }
+    .step-badge {
+        display: inline-block;
+        background-color: #0A2B5E;
+        color: white;
+        font-size: 0.75rem;
+        font-weight: 700;
+        padding: 3px 10px;
+        border-radius: 12px;
+        text-transform: uppercase;
+        margin-bottom: 6px;
+    }
+    .step-badge-2 {
+        display: inline-block;
+        background-color: #D7282F;
+        color: white;
+        font-size: 0.75rem;
+        font-weight: 700;
+        padding: 3px 10px;
+        border-radius: 12px;
+        text-transform: uppercase;
+        margin-bottom: 6px;
+    }
+    .step-title {
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: #0F172A;
+        margin: 0 0 4px 0;
+    }
+    .step-desc {
+        font-size: 0.92rem;
+        color: #475569;
+        margin: 0;
+    }
+
     .comprovante-card {
         background-color: #FFFFFF;
         border: 1px solid var(--ellenco-border);
@@ -198,29 +251,24 @@ Instruções:
 """
 
 def converter_texto_para_float(valor_str) -> float:
-    """Converte textos monetários brasileiros (ex: 'R\$ 8.500,00' ou '18790.4') em float."""
     if valor_str is None or pd.isna(valor_str):
         return None
     if isinstance(valor_str, (int, float)):
         return float(valor_str)
     
     limpo = str(valor_str).replace("R$", "").replace("r$", "").strip()
-    # Mantém apenas dígitos, pontos e vírgulas
     match = re.search(r'[\d.,]+', limpo)
     if not match:
         return None
     num_str = match.group(0)
 
-    # Se tiver ponto e vírgula (ex: 8.500,00 -> 8500.00)
     if "." in num_str and "," in num_str:
         if num_str.rfind(",") > num_str.rfind("."):
             num_str = num_str.replace(".", "").replace(",", ".")
         else:
             num_str = num_str.replace(",", "")
-    # Se tiver apenas vírgula (ex: 8500,00 -> 8500.00)
     elif "," in num_str:
         num_str = num_str.replace(",", ".")
-    # Se tiver apenas ponto, verifica se é separador de milhar (ex: 8.500 -> 8500)
     elif "." in num_str:
         partes = num_str.split(".")
         if len(partes[-1]) == 3 and len(partes) > 1:
@@ -232,8 +280,6 @@ def converter_texto_para_float(valor_str) -> float:
         return None
 
 def extrair_valor_do_texto_usuario(texto: str):
-    """Extrai valores numéricos/monetários diretamente da frase digitada pelo usuário."""
-    # Remove datas no formato DD/MM/YYYY ou YYYY-MM-DD para não confundir com valores
     texto_sem_data = re.sub(r'\b\d{2,4}[-/]\d{2}[-/]\d{2,4}\b', '', texto)
     padroes = re.findall(r'(?:R\$\s*)?\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|(?:R\$\s*)?\d+(?:[.,]\d{1,2})?', texto_sem_data)
     if padroes:
@@ -293,7 +339,6 @@ def extrair_criterios_ia(texto_usuario: str, df: pd.DataFrame) -> dict:
                             break
                     break
 
-    # Fallback para capturar o valor diretamente do texto caso a IA não tenha preenchido
     if criterios.get("valor") is None:
         criterios["valor"] = extrair_valor_do_texto_usuario(texto_usuario)
 
@@ -310,13 +355,11 @@ def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or not criterios:
         return pd.DataFrame()
 
-    # Se nenhum critério válido foi identificado, não retorna a tabela inteira
     if not criterios.get("empresa") and not criterios.get("fornecedor") and criterios.get("valor") is None:
         return pd.DataFrame()
 
     resultado = df.copy()
 
-    # 1. Filtro por Empresa
     if criterios.get("empresa") and "Empresa" in resultado.columns:
         termo_emp = isolar_termo_relevante(criterios["empresa"])
         col_empresa = resultado["Empresa"]
@@ -324,7 +367,6 @@ def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
             col_empresa = col_empresa.iloc[:, 0]
         resultado = resultado[col_empresa.astype(str).str.contains(termo_emp, case=False, na=False)]
 
-    # 2. Filtro por Fornecedor
     if criterios.get("fornecedor") and "Fornecedor" in resultado.columns:
         termo_forn = isolar_termo_relevante(criterios["fornecedor"])
         col_forn = resultado["Fornecedor"]
@@ -332,14 +374,12 @@ def buscar_comprovantes(criterios: dict, df: pd.DataFrame) -> pd.DataFrame:
             col_forn = col_forn.iloc[:, 0]
         resultado = resultado[col_forn.astype(str).str.contains(termo_forn, case=False, na=False)]
 
-    # 3. Filtro por Valor
     if criterios.get("valor") is not None and "Valor" in resultado.columns:
         valor_busca = float(criterios["valor"])
         col_val = resultado["Valor"]
         if isinstance(col_val, pd.DataFrame):
             col_val = col_val.iloc[:, 0]
         valores_df = col_val.apply(converter_texto_para_float)
-        # Compara com margem de tolerância para casas decimais (0.01)
         resultado = resultado[valores_df.apply(lambda x: x is not None and abs(x - valor_busca) < 0.01)]
 
     return resultado
@@ -406,9 +446,11 @@ def gerar_zip_comprovantes(lista_itens: list) -> bytes:
     return zip_buffer.getvalue()
 
 # 5. Interface de Pesquisa
+st.info("💡 **Como funciona:** A consulta é dividida em **2 etapas**. Na **Etapa 1**, você visualiza a listagem geral de todos os comprovantes encontrados. Na **Etapa 2** (logo abaixo da tabela), você seleciona exatamente quais PDFs deseja baixar.")
+
 entrada_usuario = st.text_input(
-    "Localizar Comprovante por Linguagem Natural",
-    placeholder="Ex.: pagamentos de R\$ 8.500,00 ou Empresa Delta para o fornecedor Horizonte"
+    "🔍 Digite o que procura (Empresa, Fornecedor ou Valor):",
+    placeholder="Ex.: empresa gama, pagamentos de R\$ 8.500,00 ou Empresa Delta para Horizonte"
 )
 
 if entrada_usuario:
@@ -417,7 +459,7 @@ if entrada_usuario:
         resultados = buscar_comprovantes(criterios, df_indice)
 
     if criterios.get("empresa") or criterios.get("fornecedor") or criterios.get("valor") is not None:
-        with st.expander("🔍 Parâmetros de Filtro Identificados", expanded=False):
+        with st.expander("🔍 Parâmetros de Filtro Identificados pela IA", expanded=False):
             st.json(criterios)
 
     total = len(resultados)
@@ -425,7 +467,14 @@ if entrada_usuario:
     if total == 0:
         st.warning("Nenhum comprovante correspondente aos termos pesquisados. Verifique o nome da empresa, fornecedor ou valor informado.")
     else:
-        st.success(f"**{total}** comprovante(s) localizado(s) com sucesso para o filtro solicitado.")
+        # ==================== ETAPA 1 ====================
+        st.markdown(f"""
+        <div class="step-box">
+            <span class="step-badge">Etapa 1 de 2</span>
+            <h3 class="step-title">📋 Lista de Comprovantes Localizados ({total} encontrados)</h3>
+            <p class="step-desc">Esta tabela é apenas para <b>conferência geral</b> dos lançamentos encontrados. Para escolher e baixar os arquivos PDF, utilize a <b>Etapa 2</b> logo abaixo.</p>
+        </div>
+        """, unsafe_allow_html=True)
 
         colunas_mostrar = ["Data", "Empresa", "Fornecedor", "Valor", "Nota Fiscal", "PDF"]
         st.dataframe(
@@ -433,23 +482,30 @@ if entrada_usuario:
             width="stretch"
         )
 
-        st.markdown("---")
-        st.subheader("📑 Visualização e Download do Documento")
+        # ==================== ETAPA 2 ====================
+        st.markdown("""
+        <div class="step-box-2">
+            <span class="step-badge-2">Etapa 2 de 2</span>
+            <h3 class="step-title">📥 Seleção e Download dos Comprovantes em PDF</h3>
+            <p class="step-desc">Escolha abaixo um ou mais registros (identificados com <b>Fornecedor</b>, Data, Valor e NF) para gerar e baixar os PDFs desejados.</p>
+        </div>
+        """, unsafe_allow_html=True)
 
+        # Opções da Etapa 2 agora incluem Fornecedor e Empresa de forma clara
         mapa_opcoes = {
-            f"Registro #{idx} | Data: {row.get('Data', 'N/D')} | Valor: R\$ {row.get('Valor', 'N/D')} | NF: {row.get('Nota Fiscal', 'N/D')}": idx
+            f"Registro #{idx} | Fornecedor: {row.get('Fornecedor', 'N/D')} | Empresa: {row.get('Empresa', 'N/D')} | Data: {row.get('Data', 'N/D')} | Valor: R\$ {row.get('Valor', 'N/D')} | NF: {row.get('Nota Fiscal', 'N/D')}": idx
             for idx, row in resultados.iterrows()
         }
         todas_opcoes = list(mapa_opcoes.keys())
 
         col_ctrl1, col_ctrl2 = st.columns([1, 3])
         with col_ctrl1:
-            selecionar_tudo = st.checkbox("Selecionar todos os comprovantes filtrados", value=False)
+            selecionar_tudo = st.checkbox("Selecionar todos os comprovantes listados", value=False)
 
         itens_default = todas_opcoes if selecionar_tudo else ([todas_opcoes[0]] if todas_opcoes else [])
 
         escolhas = st.multiselect(
-            "Selecione um ou mais comprovantes para emitir:",
+            "Clique no campo abaixo para adicionar ou remover comprovantes da lista de download:",
             options=todas_opcoes,
             default=itens_default
         )
@@ -466,7 +522,7 @@ if entrada_usuario:
                     item_sel = itens_selecionados[0]
                     st.markdown(f"""
                     <div class="comprovante-card">
-                        <div class="card-title">Resumo do Lançamento</div>
+                        <div class="card-title">Resumo do Lançamento Selecionado</div>
                         <div class="card-row"><span class="card-label">Empresa Pagadora:</span> <span class="card-value">{item_sel.get('Empresa', 'N/D')}</span></div>
                         <div class="card-row"><span class="card-label">Fornecedor / Favorecido:</span> <span class="card-value">{item_sel.get('Fornecedor', 'N/D')}</span></div>
                         <div class="card-row"><span class="card-label">Data de Liquidação:</span> <span class="card-value">{item_sel.get('Data', 'N/D')}</span></div>
@@ -486,6 +542,7 @@ if entrada_usuario:
                     <div class="comprovante-card">
                         <div class="card-title">Resumo do Lote Selecionado</div>
                         <div class="card-row"><span class="card-label">Quantidade de Comprovantes:</span> <span class="card-value">{qtd_sel} documentos</span></div>
+                        <div class="card-row"><span class="card-label">Fornecedores Selecionados:</span> <span class="card-value">{', '.join(set([str(it.get('Fornecedor', '')) for it in itens_selecionados]))}</span></div>
                         <div class="card-row"><span class="card-label">Empresas Envolvidas:</span> <span class="card-value">{', '.join(set([str(it.get('Empresa', '')) for it in itens_selecionados]))}</span></div>
                         <div class="card-row"><span class="card-label">Valor Total do Lote:</span> <span class="card-value-highlight">R\$ {total_soma:,.2f}</span></div>
                     </div>
@@ -498,11 +555,12 @@ if entrada_usuario:
                     pdf_path = localizar_ficheiro_pdf(pdf_path_original)
                     pag_num = converter_para_inteiro(item_sel.get("Página") or item_sel.get("pagina") or 1)
                     nome_emp_seguro = str(item_sel.get('Empresa', 'doc')).replace(' ', '_')
+                    nome_forn_seguro = str(item_sel.get('Fornecedor', 'forn')).replace(' ', '_')
 
                     st.markdown(f"""
                     <div class="comprovante-card" style="border-left-color: #D7282F;">
-                        <div class="card-title">Arquivo Consolidado</div>
-                        <div class="card-row"><span class="card-label">Arquivo:</span> <span class="card-value">{os.path.basename(pdf_path_original)}</span></div>
+                        <div class="card-title">Arquivo Pronto para Download</div>
+                        <div class="card-row"><span class="card-label">Arquivo Base:</span> <span class="card-value">{os.path.basename(pdf_path_original)}</span></div>
                         <div class="card-row"><span class="card-label">Página do Comprovante:</span> <span class="card-value">Pág. {pag_num}</span></div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -513,7 +571,7 @@ if entrada_usuario:
                         st.download_button(
                             label="📥 Baixar Comprovante (PDF Individual)",
                             data=pdf_bytes,
-                            file_name=f"comprovante_{nome_emp_seguro}_pag{pag_num}.pdf",
+                            file_name=f"comprovante_{nome_emp_seguro}_{nome_forn_seguro}_pag{pag_num}.pdf",
                             mime="application/pdf",
                             width="stretch"
                         )
@@ -523,7 +581,7 @@ if entrada_usuario:
                     st.markdown(f"""
                     <div class="comprovante-card" style="border-left-color: #D7282F;">
                         <div class="card-title">Opções de Download em Lote</div>
-                        <div class="card-row"><span class="card-label">Total de Páginas:</span> <span class="card-value">{qtd_sel} comprovantes</span></div>
+                        <div class="card-row"><span class="card-label">Total Selecionado:</span> <span class="card-value">{qtd_sel} comprovantes</span></div>
                     </div>
                     """, unsafe_allow_html=True)
                     st.write("")
