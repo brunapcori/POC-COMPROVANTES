@@ -308,7 +308,6 @@ def extrair_pagina_pdf(caminho_pdf: str, numero_pagina: int) -> bytes:
     return buffer.getvalue()
 
 def gerar_pdf_consolidado(lista_itens: list) -> bytes:
-    """Mescla as páginas selecionadas de diferentes comprovantes em um único PDF."""
     writer = PdfWriter()
     for item in lista_itens:
         pdf_path_original = str(item.get("PDF", ""))
@@ -324,7 +323,6 @@ def gerar_pdf_consolidado(lista_itens: list) -> bytes:
     return buffer.getvalue()
 
 def gerar_zip_comprovantes(lista_itens: list) -> bytes:
-    """Gera um arquivo ZIP com os PDFs individuais de cada comprovante selecionado."""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for idx, item in enumerate(lista_itens):
@@ -363,7 +361,6 @@ if entrada_usuario:
     else:
         st.success(f"**{total}** comprovante(s) localizado(s) com sucesso para o filtro solicitado.")
 
-        # Exibição da tabela de comprovantes
         colunas_mostrar = ["Data", "Empresa", "Fornecedor", "Valor", "Nota Fiscal", "PDF"]
         st.dataframe(
             resultados[[c for c in colunas_mostrar if c in resultados.columns]],
@@ -373,14 +370,12 @@ if entrada_usuario:
         st.markdown("---")
         st.subheader("📑 Visualização e Download do Documento")
 
-        # Mapeamento para opções legíveis
         mapa_opcoes = {
             f"Registro #{idx} | Data: {row.get('Data', 'N/D')} | Valor: R\$ {row.get('Valor', 'N/D')} | NF: {row.get('Nota Fiscal', 'N/D')}": idx
             for idx, row in resultados.iterrows()
         }
         todas_opcoes = list(mapa_opcoes.keys())
 
-        # Botão para marcar todos
         col_ctrl1, col_ctrl2 = st.columns([1, 3])
         with col_ctrl1:
             selecionar_tudo = st.checkbox("Selecionar todos os comprovantes filtrados", value=False)
@@ -414,7 +409,6 @@ if entrada_usuario:
                     </div>
                     """, unsafe_allow_html=True)
                 else:
-                    # Cálculo do valor acumulado
                     valores_num = []
                     for it in itens_selecionados:
                         val_raw = str(it.get('Valor', '0')).replace(',', '.')
@@ -439,6 +433,7 @@ if entrada_usuario:
                     pdf_path_original = str(item_sel.get("PDF", ""))
                     pdf_path = localizar_ficheiro_pdf(pdf_path_original)
                     pag_num = converter_para_inteiro(item_sel.get("Página") or item_sel.get("pagina") or 1)
+                    nome_emp_seguro = str(item_sel.get('Empresa', 'doc')).replace(' ', '_')
 
                     st.markdown(f"""
                     <div class="comprovante-card" style="border-left-color: #D7282F;">
@@ -454,4 +449,36 @@ if entrada_usuario:
                         st.download_button(
                             label="📥 Baixar Comprovante (PDF Individual)",
                             data=pdf_bytes,
-                            file_name=f"comprovante_{item_sel.get('Empresa','doc')}_pag
+                            file_name=f"comprovante_{nome_emp_seguro}_pag{pag_num}.pdf",
+                            mime="application/pdf",
+                            width="stretch"
+                        )
+                    else:
+                        st.error(f"O arquivo `{os.path.basename(pdf_path_original)}` não foi localizado no diretório extraído.")
+                else:
+                    st.markdown(f"""
+                    <div class="comprovante-card" style="border-left-color: #D7282F;">
+                        <div class="card-title">Opções de Download em Lote</div>
+                        <div class="card-row"><span class="card-label">Total de Páginas:</span> <span class="card-value">{qtd_sel} comprovantes</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.write("")
+
+                    pdf_lote_bytes = gerar_pdf_consolidado(itens_selecionados)
+                    st.download_button(
+                        label="📄 Baixar Todos em um Único PDF Consolidado",
+                        data=pdf_lote_bytes,
+                        file_name=f"comprovantes_lote_{qtd_sel}_itens.pdf",
+                        mime="application/pdf",
+                        width="stretch"
+                    )
+
+                    st.write("")
+                    zip_lote_bytes = gerar_zip_comprovantes(itens_selecionados)
+                    st.download_button(
+                        label="📦 Baixar Todos Separados em Arquivo ZIP",
+                        data=zip_lote_bytes,
+                        file_name=f"comprovantes_lote_{qtd_sel}_arquivos.zip",
+                        mime="application/zip",
+                        width="stretch"
+                    )
